@@ -8,7 +8,7 @@ How much faster is [vLLM](https://github.com/vllm-project/vllm) than plain Huggi
 
 - **TBD× the throughput of HF batched generation**: vLLM TBD tokens/s vs TBD tokens/s for HF with static batches of 32 (TBD× vs one prompt at a time).
 - **TBD tokens/s at 64 concurrent streaming requests** from `vllm serve`, with p95 latency of TBD s per 128-token response.
-- **TBD tokens of KV cache (TBD GiB)**: what vLLM fit on the T4's 16 GB next to the model.
+- **TBD tokens of KV cache (TBD GiB)**: what vLLM fit on the T4 next to the model.
 
 ## Why vLLM is faster
 
@@ -55,7 +55,7 @@ python src/plot.py                             # results/*.csv -> results/*.png
 
 **Troubleshooting**
 - **vLLM fails with an attention-kernel error.** On the T4, vLLM picks the FlashInfer attention backend (FlashAttention needs a newer GPU). If FlashInfer fails, add `--attention-backend TRITON_ATTN` to the `offline_bench.py --method vllm` and `load_test.py` commands.
-- **Out of GPU memory.** Each benchmark frees the GPU when its process exits. Check `!nvidia-smi` for a leftover process from an interrupted cell, and restart the runtime if needed.
+- **Out of GPU memory.** Each benchmark frees the GPU when its process exits. Check `!nvidia-smi` for a leftover process from an interrupted cell, and restart the runtime if needed. If vLLM itself runs out of memory, lower `GPU_MEMORY_UTILIZATION` in `src/common.py` (see Methodology).
 - **The session disconnects.** Free Colab sessions disconnect when idle; keep the notebook open while it runs.
 
 ## Methodology
@@ -81,14 +81,15 @@ python src/plot.py                             # results/*.csv -> results/*.png
 - The metric is output tokens per second, so `hf_naive` stays comparable despite using fewer prompts. It is reported as the mean with a t-based 95% confidence interval (mean ± t<sub>0.975, 4</sub> · s / √5; with only 5 runs a bootstrap interval is unreliable), plus the median.
 
 **Experiment 2: online serving** (`src/load_test.py`)
-- **Server:** `vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 4096 --no-enable-prefix-caching --generation-config vllm` runs as a background process. The script polls `/health` until the server is ready and shuts it down at the end.
+- **Server:** `vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 4096 --gpu-memory-utilization 0.85 --no-enable-prefix-caching --generation-config vllm` runs as a background process. The script polls `/health` until the server is ready and shuts it down at the end.
 - **Client:** an async `httpx` client sends streaming `/v1/completions` requests at concurrency 1, 4, 16 and 64. Each level sends max(64, 4 × concurrency) requests, cycling through the prompts. 8 warm-up requests are discarded first.
 - **Per request:** time to first token (from sending the request to the first chunk containing a token) and total latency (to the last token).
 - **Per level:** output tokens/s (all output tokens divided by the level's wall time), p50 and p95 latency, and p50 time to first token.
 
 **Memory: why there is no "peak memory" number for vLLM**
 - **HF:** we report `torch.cuda.max_memory_allocated()`, which covers the weights, KV cache and activations at their peak.
-- **vLLM preallocates by design.** At start-up it claims `gpu_memory_utilization` (0.9) of the GPU's memory, loads the weights, measures how much activation memory a forward pass needs, and turns everything left over into a pool of KV-cache blocks. Its memory footprint is therefore about 90% of the GPU whatever the workload, and a "peak" number would only measure that setting.
+- **vLLM preallocates by design.** At start-up it claims `gpu_memory_utilization` of the GPU's memory, loads the weights, measures how much activation memory a forward pass needs, and turns everything left over into a pool of KV-cache blocks. Its memory footprint is therefore fixed by that setting whatever the workload, and a "peak" number would only measure the setting.
+- **We use 0.85, not vLLM's default 0.9.** In vLLM 0.19.0, CUDA graphs (about 0.75 GiB here) and the CUDA runtime's own memory sit outside the reservation. On the T4's 14.56 GiB, the last 10% wasn't enough for them, and the first full batch ran out of memory. 0.85 still leaves room for roughly 320k tokens of KV cache, far more than this benchmark uses.
 - **What we report for vLLM is the KV cache pool.** `kv_cache_tokens` matches the `GPU KV cache size: N tokens` line in vLLM's log. `kv_cache_gib` is its size: 28 KiB per token for this model (K and V × 28 layers × 2 KV heads × 128 dims × 2 bytes). Divided by 4096 (the max context), it tells you how many full-length requests fit at once.
 
 ## Limitations

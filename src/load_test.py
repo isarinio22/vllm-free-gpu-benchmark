@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -26,9 +27,19 @@ from typing import Any
 import httpx
 import numpy as np
 
-from common import MAX_MODEL_LEN, MAX_NEW_TOKENS, MODEL, RAW_DIR, env_info, load_prompts, write_json
+from common import (
+    GPU_MEMORY_UTILIZATION,
+    MAX_MODEL_LEN,
+    MAX_NEW_TOKENS,
+    MODEL,
+    RAW_DIR,
+    env_info,
+    load_prompts,
+    write_json,
+)
 
 SERVER_LOG = RAW_DIR / "vllm_server.log"
+ANSI_COLOR = re.compile(r"\x1b\[[0-9;]*m")
 STARTUP_TIMEOUT_S = 15 * 60  # a cold start on a T4 includes torch.compile and CUDA graph capture
 REQUEST_TIMEOUT_S = 300
 MIN_REQUESTS = 64  # each level sends max(64, 4 x concurrency) requests
@@ -51,6 +62,7 @@ def server_command(port: int, attention_backend: str | None) -> list[str]:
         "vllm", "serve", MODEL,
         "--dtype", "half",  # the T4 has no bf16 support
         "--max-model-len", str(MAX_MODEL_LEN),
+        "--gpu-memory-utilization", str(GPU_MEMORY_UTILIZATION),
         "--no-enable-prefix-caching",  # prompts repeat across levels; cache hits would inflate the numbers
         "--generation-config", "vllm",  # ignore Qwen's sampling defaults (repetition_penalty=1.1, ...)
         "--port", str(port),
@@ -82,7 +94,7 @@ def wait_until_healthy(proc: subprocess.Popen, base_url: str) -> None:
     start = time.monotonic()
     while time.monotonic() - start < STARTUP_TIMEOUT_S:
         if proc.poll() is not None:
-            raise RuntimeError(f"vllm serve exited with code {proc.returncode}. End of log:\n{log_tail()}")
+            raise RuntimeError(f"vllm serve exited with code {proc.returncode}. End of log:\n{log_excerpt()}")
         try:
             if httpx.get(f"{base_url}/health", timeout=2).status_code == 200:
                 print(f"Server ready after {time.monotonic() - start:.0f}s", flush=True)
@@ -90,7 +102,7 @@ def wait_until_healthy(proc: subprocess.Popen, base_url: str) -> None:
         except httpx.TransportError:
             pass  # not listening yet
         time.sleep(2)
-    raise TimeoutError(f"vllm serve was not healthy after {STARTUP_TIMEOUT_S}s. End of log:\n{log_tail()}")
+    raise TimeoutError(f"vllm serve was not healthy after {STARTUP_TIMEOUT_S}s. End of log:\n{log_excerpt()}")
 
 
 def stop_server(proc: subprocess.Popen) -> None:
@@ -106,9 +118,16 @@ def stop_server(proc: subprocess.Popen) -> None:
             pass
 
 
-def log_tail(lines: int = 40) -> str:
-    """The last lines of the server log, for error messages."""
-    return "\n".join(SERVER_LOG.read_text(errors="replace").splitlines()[-lines:])
+def log_excerpt() -> str:
+    """The end of the server log, for error messages.
+
+    The root cause of a failed start is logged by the engine process (lines
+    prefixed "(EngineCore"), while the API server only adds a generic
+    "Engine core initialization failed" traceback, so show the engine's lines.
+    """
+    lines = [ANSI_COLOR.sub("", line) for line in SERVER_LOG.read_text(errors="replace").splitlines()]
+    engine_lines = [line for line in lines if line.startswith("(EngineCore")]
+    return "\n".join(engine_lines[-25:] if engine_lines else lines[-40:])
 
 
 async def one_request(client: httpx.AsyncClient, prompt: str) -> RequestResult:

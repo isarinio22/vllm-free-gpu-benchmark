@@ -17,7 +17,10 @@ NAIVE_SUBSET = 32  # hf_naive runs one prompt at a time, so it only gets the fir
 SEED = 42
 MAX_PROMPT_TOKENS = 512
 MAX_MODEL_LEN = 4096
-GPU_MEMORY_UTILIZATION = 0.9  # vLLM's default, stated explicitly because the README explains it
+# Share of GPU memory vLLM reserves up front. vLLM's default of 0.9 runs out of
+# memory on the T4 (14.56 GiB usable): CUDA graphs (~0.75 GiB) and the CUDA
+# contexts are allocated outside the reservation and don't fit in the last 10%.
+GPU_MEMORY_UTILIZATION = 0.85
 WARMUP_RUNS = 1
 TIMED_RUNS = 5
 
