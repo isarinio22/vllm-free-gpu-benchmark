@@ -1,0 +1,4 @@
+method,num_prompts,batch_size,timed_runs,mean_tok_s,ci95_low,ci95_high,median_tok_s,peak_mem_gib,kv_cache_tokens,kv_cache_gib
+hf_naive,32,1,5,26.714,26.54,26.887,26.777,2.919,,
+hf_batched,200,32,5,375.104,374.13,376.078,374.895,4.34,,
+vllm,200,,5,2306.125,2206.116,2406.134,2333.021,,331872,8.862

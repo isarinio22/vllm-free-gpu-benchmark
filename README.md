@@ -4,11 +4,35 @@ How much faster is [vLLM](https://github.com/vllm-project/vllm) than plain Huggi
 
 ![Offline throughput: vLLM vs Hugging Face transformers](results/offline_throughput.png)
 
-> _Results pending: the chart and numbers below are placeholders until the first full run._
+- **6.1× the throughput of HF batched generation.** vLLM generated 2,306 output tokens/s, against 375 tokens/s for HF with static batches of 32 and 27 tokens/s for HF one prompt at a time (86×).
+- **1,738 tokens/s at 64 concurrent streaming requests** from `vllm serve`. That is 35× the throughput of a single stream, while p95 latency per 128-token response only went from 2.9 s to 5.6 s.
+- **331,872 tokens of KV cache (8.9 GiB)** fit on the T4 next to the model: room for 81 full-length 4,096-token requests at once. This benchmark's 200 prompts need about 45k.
 
-- **TBD× the throughput of HF batched generation**: vLLM TBD tokens/s vs TBD tokens/s for HF with static batches of 32 (TBD× vs one prompt at a time).
-- **TBD tokens/s at 64 concurrent streaming requests** from `vllm serve`, with p95 latency of TBD s per 128-token response.
-- **TBD tokens of KV cache (TBD GiB)**: what vLLM fit on the T4 next to the model.
+![vLLM server under load: throughput and p95 latency vs concurrency](results/load_test.png)
+
+<details>
+<summary>All numbers</summary>
+
+Measured on 2026-10-17 on a free Colab T4 with vLLM 0.19.0, torch 2.10.0, transformers 4.57.6 and Python 3.13. The CSVs are in [`results/`](results/).
+
+| Method | Prompts | Output tok/s (mean) | 95% CI | Median | Memory |
+|---|---|---|---|---|---|
+| HF, one prompt at a time | 32 | 26.7 | 26.5–26.9 | 26.8 | 2.9 GiB peak |
+| HF, static batches of 32 | 200 | 375.1 | 374.1–376.1 | 374.9 | 4.3 GiB peak |
+| vLLM | 200 | 2,306.1 | 2,206.1–2,406.1 | 2,333.0 | 8.9 GiB KV cache (331,872 tokens) |
+
+| Concurrent requests | Requests | Output tok/s | p50 latency | p95 latency | p50 time to first token |
+|---|---|---|---|---|---|
+| 1 | 64 | 49.2 | 2.58 s | 2.90 s | 36 ms |
+| 4 | 64 | 243.2 | 2.10 s | 2.18 s | 95 ms |
+| 16 | 64 | 779.7 | 2.60 s | 2.76 s | 303 ms |
+| 64 | 256 | 1,738.3 | 4.62 s | 5.57 s | 405 ms |
+
+- **Repeatability:** running both vLLM experiments a second time on the same runtime gave 2,311 tok/s offline and load-test throughput within 1% at every level.
+- **Every output had exactly 128 tokens**, for all methods. All load-test requests succeeded.
+- **One oddity, not yet explained:** a single stream was slower per request than 4 concurrent streams (p50 2.58 s vs 2.10 s), in both passes.
+
+</details>
 
 ## Why vLLM is faster
 
@@ -94,7 +118,7 @@ python src/plot.py                             # results/*.csv -> results/*.png
 
 ## Limitations
 
-- **One GPU, one Colab VM.** A T4 (Turing, 2019) with 16 GB. Numbers will differ on other GPUs and even between Colab sessions.
+- **One GPU, one Colab VM.** A T4 (Turing, 2019) with 16 GB. Numbers will differ on other GPUs and even between Colab sessions, by more than the confidence intervals suggest: the intervals only capture run-to-run noise within one session. An earlier session measured HF at 24.6 and 397 tok/s, against 26.7 and 375 tok/s in the reported run.
 - **One small model.** 1.5B parameters. Larger models leave less room for the KV cache and shift the balance between compute and memory.
 - **Greedy decoding only, with a fixed 128 output tokens and EOS ignored.** Real traffic has outputs of varying length, which tends to favour continuous batching even more.
 - **fp16 on a model trained in bf16**, because the T4 has no bf16 support.
